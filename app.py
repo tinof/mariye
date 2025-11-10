@@ -52,6 +52,26 @@ df['Rate_Male'] = (df['Cum_Div_Male'] / df['Cum_Mar_Male'] * 100)
 df['Rate_Female'] = (df['Cum_Div_Female'] / df['Cum_Mar_Female'] * 100)
 df['Rate_SameSex'] = (df['Cum_Div_SameSex'] / df['Cum_Mar_SameSex'] * 100)
 
+# Precompute group totals and core stats for reuse
+male_marriages = df['Marriages_Male'].sum()
+male_divorces = df['Divorces_Male'].sum()
+female_marriages = df['Marriages_Female'].sum()
+female_divorces = df['Divorces_Female'].sum()
+opposite_marriages = df['Marriages_Opposite'].sum()
+opposite_divorces = df['Divorces_Opposite'].sum()
+
+p_male = male_divorces / male_marriages if male_marriages else 0
+p_female = female_divorces / female_marriages if female_marriages else 0
+p_same = (male_divorces + female_divorces) / (male_marriages + female_marriages)
+
+contingency_table = np.array([
+    [male_divorces, male_marriages - male_divorces],
+    [female_divorces, female_marriages - female_divorces]
+])
+odds_ratio_tmp, p_value_fisher = stats.fisher_exact(contingency_table)
+odds_ratio_female_vs_male = 1/odds_ratio_tmp if odds_ratio_tmp != 0 else np.inf
+risk_ratio_female_vs_male = (p_female / p_male) if p_male > 0 else np.inf
+
 # Header
 st.title("💍 Avioerot Suomessa 2017-2024")
 st.markdown("### Vertailu: Samaa sukupuolta vs. eri sukupuolta olevat parit")
@@ -62,7 +82,91 @@ Tämä tarkoittaa, että samaa sukupuolta olevien parien data kattaa vain 7-8 vu
 kun taas eri sukupuolta olevien parien avioerot voivat tulla vuosikymmeniä vanhoista avioliitoista.
 """)
 
+# Guided helper: define what "eroaste" means
+with st.expander("🧭 Ohjattu tila: Mitä tarkoitat 'eroprosentilla'?"):
+    choice = st.radio(
+        "Valitse mittari sen mukaan, mitä haluat sanoa:",
+        (
+            "Kalenterivuoden indikaattori (eronnuet / solmitut samana vuonna)",
+            "Kumulatiivinen osuus 2017–2024 (erot / avioliitot vuodesta 2017)",
+            "Kohortin elinaikainen osuus (vaatii eloonjäämisanalyysin, EI saatavilla tästä datasta)"
+        ),
+        index=1
+    )
+
+    if "Kalenterivuoden" in choice:
+        year = st.slider("Valitse vuosi", int(df['Year'].min()), int(df['Year'].max()), int(df['Year'].max()))
+        row = df.loc[df['Year'] == year].iloc[0]
+        st.write("""
+        Tämä on nopea rytmi‑indikaattori, EI riski tai elinaikainen todennäköisyys. 
+        Hyödyllinen lyhyen aikavälin muutoksiin, ei ryhmien välisten 'kuka eroaa useammin' ‑väittämiin.
+        """)
+        st.metric("Naisparit", f"{row['Divorces_Female']/row['Marriages_Female']*100:.1f}%")
+        st.metric("Miesparit", f"{row['Divorces_Male']/row['Marriages_Male']*100:.1f}%")
+        st.metric("Eri sukupuolta", f"{row['Divorces_Opposite']/row['Marriages_Opposite']*100:.1f}%")
+    elif "Kumulatiivinen" in choice:
+        st.write("""
+        Tämä vastaa kysymykseen: "Kuinka suuri osuus 2017–2024 solmituista avioliitoista 
+        on jo päättynyt eroon?" — Samaa sukupuolta olevien keskinäinen vertailu on järkevä, 
+        heterovertailu ei (aikajänne).
+        """)
+        st.metric("Naisparit", f"{p_female*100:.1f}%")
+        st.metric("Miesparit", f"{p_male*100:.1f}%")
+        st.metric("Samaa sukupuolta (yht.)", f"{p_same*100:.1f}%")
+        st.caption(f"Fisher p-arvo naisparit vs miesparit: {p_value_fisher:.2e}; Riskisuhde: {risk_ratio_female_vs_male:.2f}x; Odds‑suhde: {odds_ratio_female_vs_male:.2f}x.")
+    else:
+        st.error("Et voi laskea tätä aggregoidusta taulukosta.")
+        st.write("""
+        Tarvitset jokaisesta avioliitosta: (1) solmimispäivä, (2) eropäivä tai tieto että 
+        avioliitto on yhä voimassa tiettynä päivänä. Näillä arvioidaan eloonjäämiskäyrä 
+        (Kaplan–Meier) ja 'elinaikainen' ero‑osuus. Katso myös välilehti "Puuttuvan Datan Hankkiminen".
+        """)
+
+    st.markdown("—")
+    q = st.selectbox(
+        "Mikä on journalistinen kysymyksesi?",
+        (
+            "Eroavatko naisparit useammin kuin miesparit (2017–2024)?",
+            "Voiko sanoa 'noin puolet avioliitoista päättyy'?",
+            "Milloin eroja tapahtuu eniten?"
+        )
+    )
+    if "naisparit" in q:
+        st.success(
+            f"Naisparien eroaste: {p_female*100:.1f} % ({female_divorces}/{female_marriages}). "
+            f"Miesparien: {p_male*100:.1f} % ({male_divorces}/{male_marriages}). "
+            f"Riskisuhde ≈ {risk_ratio_female_vs_male:.2f}x, Fisher p = {p_value_fisher:.2e} (merkitsevä)."
+        )
+        st.code(
+            f"Vuosina 2017–2024 naisparien eroaste oli {p_female*100:.1f}% ja miesparien {p_male*100:.1f}%. "
+            f"Ero on tilastollisesti merkitsevä (Fisher p={p_value_fisher:.2e}); naispareilla riski oli noin "
+            f"{risk_ratio_female_vs_male:.2f}‑kertainen.",
+            language="markdown"
+        )
+    elif "noin puolet" in q:
+        st.warning("Se on elinaikainen arvio, ei tästä taulukosta laskettava luku. Tarvitaan kohortti‑/eloonjäämisanalyysi.")
+        st.code(
+            "'Noin puolet avioliitoista päättyy' on elinaikainen ennuste. Aggregoitu 2017–2024‑taulukko ei sisällä kestoa, joten sitä ei voi vahvistaa tästä datasta.",
+            language="markdown"
+        )
+    else:
+        st.info("Tarvitset avioliiton keston. Tästä aggregaattidatasta et pysty paikantamaan 3.–4. vuoden 'piikkiä'.")
+        st.code(
+            "Milloin eroja tapahtuu eniten? Tämä edellyttää kestoa (vuosia vihkimisestä), jota aggregaattitaulukko ei sisällä.",
+            language="markdown"
+        )
+
 # Key metrics
+show_hetero_indicator = st.toggle(
+    "Näytä heteroparien 2017–2024 'indikaattori' (ei vertailukelpoinen)",
+    value=False,
+    help=(
+        "Luku = 2017–2024 avioerojen määrä / 2017–2024 solmittujen avioliittojen määrä. "
+        "Se EI ole elinaikainen todennäköisyys, koska 2017–2024 avioeroihin sisältyy paljon "
+        "vanhoja avioliittoja. Siksi luku ei ole vertailukelpoinen samaa sukupuolta olevien kanssa."
+    )
+)
+
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
@@ -87,10 +191,35 @@ with col3:
     )
 
 with col4:
-    st.metric(
-        "Eri sukupuolta",
-        f"{df['Rate_Opposite'].iloc[-1]:.1f}%",
-        help="Avioerojen osuus 2017-2024 solmituista avioliitoista (huom: monet avioerot tulevat vanhemmista avioliitoista)"
+    if show_hetero_indicator:
+        st.metric(
+            "Eri sukupuolta (indikaattori)",
+            f"{df['Rate_Opposite'].iloc[-1]:.1f}%",
+            help=(
+                "2017–2024 avioerot / 2017–2024 solmitut heteroavioliitot. "
+                "Ei vertailukelpoinen samaa sukupuolta olevien kanssa ajoitusvinouman vuoksi."
+            )
+        )
+    else:
+        st.metric(
+            "Eri sukupuolta",
+            "—",
+            help=(
+                "Heteroparien '57 %' ei ole vertailukelpoinen indikaattori. "
+                "Avaa alta selitys: 'Mikä on 57 %?'."
+            )
+        )
+
+with st.expander("Mikä on '57 %' ja miksi se hämää?"):
+    st.markdown(
+        """
+        - 57 % syntyy kaavalla: 2017–2024 heteroavioerot ÷ 2017–2024 heteroavioliitot.
+        - Avioerot sisältävät paljon 1990–2010‑luvuilla solmittuja avioliittoja, joten
+          osoittaja ja nimittäjä eivät kuvaa samaa 'kohorttia'.
+        - Siksi 57 % EI ole väite, että "yli puolet heteroavioliitoista päättyy".
+        - 'Noin puolet' on elinaikainen ennuste, joka vaatii kohortti- tai eloonjäämisanalyysin
+          (tarvitaan mikrodataa avioliiton kestosta). Tässä datassa sitä ei ole.
+        """
     )
 
 st.divider()
@@ -148,6 +277,42 @@ Kaavio näyttää, miten eroaste kehittyy ajan myötä kun avioliitot vanhenevat
 """)
 
 st.divider()
+
+# Simple takeaways for non-experts
+st.subheader("🧠 Kolme tärkeintä asiaa (selkokieli)")
+st.success(
+    """
+    - Naisparit eroavat tässä datassa useammin kuin miesparit.
+    - Heterolukua ("57 %") ei pidä verrata samaa sukupuolta oleviin – se mittaa eri asiaa.
+    - Jos haluat sanoa "kuinka moni päätyy joskus eroon", tarvitset keston (eloonjäämisanalyysi).
+    """
+)
+
+# Copy-ready blurb
+copy_blurb = (
+    f"Vuosina 2017–2024 naisparien eroaste oli {p_female*100:.1f}% "
+    f"({female_divorces}/{female_marriages}) ja miesparien {p_male*100:.1f}% "
+    f"({male_divorces}/{male_marriages}). Ero on hyvin epätodennäköisesti sattumaa "
+    f"(Fisher p≈{p_value_fisher:.1e}). Naispareilla ero oli noin "
+    f"{risk_ratio_female_vs_male:.2f}-kertainen verrattuna miespareihin. "
+    f"Samaa sukupuolta olevien ja heteroparien suoraa vertailua ei voi tehdä reilusti, "
+    f"koska samaa sukupuolta olevien avioliitot alkavat vasta vuodesta 2017."
+)
+
+st.markdown("**Kopioi juttuun:**")
+st.code(copy_blurb, language="markdown")
+
+with st.expander("📚 Sanasto (selkokieli)"):
+    st.markdown(
+        """
+        - **Eroaste**: Kuinka monesta 2017–2024 solmitusta avioliitosta on jo tullut ero.
+        - **Indikaattori (vuosi)**: Vuoden erot jaettuna saman vuoden avioliitoilla. Nopea rytmimittari, ei riski.
+        - **Riskisuhde (RR)**: Kuinka monta kertaa suurempi todennäköisyys eroon ryhmässä A kuin B.
+        - **Odds‑suhde (OR)**: Laskennallinen suhde, lähellä riskisuhdetta kun prosentit ovat pieniä.
+        - **p‑arvo**: Kuinka todennäköistä olisi nähdä näin iso ero pelkän sattuman takia (mitä pienempi, sen vakuuttavampi).
+        - **Eloonjäämisanalyysi**: Menetelmä, jolla arvioidaan ajan kuluessa kertynyt erojen osuus.
+        """
+    )
 
 # Comparison chart
 col1, col2 = st.columns(2)
@@ -268,6 +433,20 @@ st.warning("""
 - ❌ Emme voi sanoa, että "samaa sukupuolta olevat eroavat harvemmin" - data on liian uutta
 """)
 
+with st.expander("Kysymyksiä ja vastauksia (journalistille)"):
+    st.markdown(
+        """
+        **Onko 'noin puolet avioliitoista päättyy eroon' totta?**  
+        – Se on elinaikainen ennuste, ei suora havaittu osuus yhden kalenterijakson sisällä. Tarvitsemme kohortti‑/eloonjäämisanalyysin sen arviointiin.
+
+        **Miksi samaa sukupuolta olevien ja heteroparien lukuja ei voi suoraan verrata?**  
+        – Samaa sukupuolta olevien avioliitot alkavat vasta 2017, heteroeroissa näkyy myös paljon aiempien vuosikymmenten avioliittoja. Aikajänteet ovat erilaiset.
+
+        **Miksi naisparien eroaste näyttää korkeammalta kuin miesparien?**  
+        – Havainto on tilastollisesti merkitsevä tässä datassa. Syy ei kuitenkaan ole tästä datasta pääteltävissä; ikä, perhetausta, lapset ja muut tekijät voivat vaikuttaa. Ne vaatisivat mikrodataa ja mallinnusta.
+        """
+    )
+
 # Data source
 st.divider()
 st.caption("""
@@ -281,7 +460,7 @@ https://pxdata.stat.fi/PxWeb/pxweb/fi/StatFin/StatFin__ssaaty/statfin_ssaaty_pxt
 # ADVANCED STATISTICAL SECTION
 # ============================================================================
 st.divider()
-st.header("🔬 Tilastotieteilijän Kulmaukseen")
+st.header("🔬 Tilastotieteilijän nurkkaus")
 
 st.info("""
 **Tämä osio on tarkoitettu:**
@@ -414,7 +593,7 @@ with tab1:
     st.markdown("---")
     
     # Statistical significance test
-    st.markdown("### 🧪 Tilastollinen Merkitsevyys: Naisparit vs Miesparit")
+    st.markdown("### 🧪 Tilastollinen merkitsevyys: Naisparit vs. miesparit")
     
     st.markdown("""
     **Kysymys:** Onko naisparien korkeampi eroaste (21% vs 14%) todellinen ero, 
@@ -442,9 +621,11 @@ with tab1:
     
     with col2:
         st.metric(
-            "Odds Ratio",
+            "Odds‑suhde (naisparit / miesparit)",
             f"{1/odds_ratio:.2f}x",
-            help="Naisparilla on tämän verran suurempi todennäköisyys erota"
+            help=(
+                "Odds‑suhde ei ole sama kuin riskisuhde, mutta pienillä prosenteilla ne ovat lähekkäin."
+            )
         )
     
     if p_value_fisher < 0.05:
@@ -468,13 +649,19 @@ with tab1:
     p_female = female_divorces / female_marriages
     p_male = male_divorces / male_marriages
     h = cohens_h(p_female, p_male)
+    risk_ratio = (p_female / p_male) if p_male > 0 else float('inf')
     
     col1, col2 = st.columns([1, 2])
     
     with col1:
         st.metric("Cohen's h", f"{h:.3f}")
-    
+
     with col2:
+        st.metric(
+            "Riskisuhde (naisparit / miesparit)",
+            f"{risk_ratio:.2f}x",
+            help="Todennäköisyyksien suhde: p(ero | naispari) / p(ero | miespari)"
+        )
         if abs(h) < 0.2:
             st.info("📊 **Pieni efekti** - Ero on olemassa, mutta ei valtava")
         elif abs(h) < 0.5:
@@ -1102,4 +1289,3 @@ with st.sidebar:
         file_name="avioerot_2017_2024.csv",
         mime="text/csv",
     )
-
